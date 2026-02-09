@@ -100,35 +100,114 @@ ai_status_msg = get_ai_status()
 # Sidebar Configuration
 st.sidebar.header("⚙️ Konfigurasi Sistem")
 
-# District Selection
+# 1. Year Selection (Top)
+st.sidebar.header("📅 Periode Analisis")
+col_year1, col_year2 = st.sidebar.columns(2)
+year_baseline = col_year1.selectbox("Tahun Baseline", list(range(2015, 2026)), index=4)  # 2019
+year_current = col_year2.selectbox("Tahun Current", list(range(2015, 2026)), index=9)  # 2024
+
+# 2. District & Kelurahan Selection (Wilayah)
+st.sidebar.header("📍 Wilayah Analisis")
 selected_district = st.sidebar.selectbox(
-    "📍 Pilih Kecamatan",
+    "Pilih Kecamatan",
     list(MATARAM_DISTRICTS.keys()),
     help="Pilih kecamatan untuk fokus analisis"
 )
 
 district_config = MATARAM_DISTRICTS[selected_district]
 
-# Year Selection for Analysis
-st.sidebar.header("📅 Periode Analisis")
-col_year1, col_year2 = st.sidebar.columns(2)
-year_baseline = col_year1.selectbox("Tahun Baseline", list(range(2015, 2026)), index=4)  # 2019
-year_current = col_year2.selectbox("Tahun Current", list(range(2015, 2026)), index=9)  # 2024
+# Regional Filters (Kelurahan/Lingkungan/RT)
+from modules.boundary_manager import BoundaryManager
+from config.bkd_config import BOUNDARY_GEOJSON_PATH
 
-# Data Mode
-st.sidebar.header("🔧 Mode Data")
-use_dummy_data = st.sidebar.checkbox(
-    "Gunakan Data Simulasi",
-    value=True,
-    help="ON: Data dummy untuk demo | OFF: Data real dari GEE (lebih lambat)"
-)
+selected_kelurahan = []
+selected_lingkungan = []
+selected_rt = []
+boundary_mgr = None
 
-if use_dummy_data:
-    st.sidebar.info("📊 Mode: Data Simulasi (Demo)")
-else:
-    st.sidebar.warning("🌍 Mode: Data Real (Membutuhkan koneksi GEE)")
+try:
+    boundary_mgr = BoundaryManager(BOUNDARY_GEOJSON_PATH)
+    
+    # --- NEW: Global SLS Search (No Guessing) ---
+    all_sls = ["--- Cari Wilayah / RT ---"] + boundary_mgr.get_all_sls_in_district(selected_district)
+    selected_global_search = st.sidebar.selectbox(
+        "🔍 Cari RT Lintas Kelurahan",
+        options=all_sls,
+        help="Ketik untuk mencari RT/Lingkungan tertentu tanpa harus pilih kelurahan"
+    )
+    
+    parent_info = {}
+    if selected_global_search != "--- Cari Wilayah / RT ---":
+        parent_info = boundary_mgr.get_parent_info_by_sls(selected_global_search, selected_district)
+    
+    # --- Hierarchical Filters ---
+    kelurahan_list = ["--- Semua Kelurahan ---"] + boundary_mgr.get_kelurahan_list(selected_district)
+    
+    # Auto-index for Kelurahan if global search is used
+    k_idx = 0
+    if parent_info.get('kelurahan'):
+        k_idx = kelurahan_list.index(parent_info['kelurahan']) if parent_info['kelurahan'] in kelurahan_list else 0
 
-# Map Controls
+    selected_kelurahan_raw = st.sidebar.selectbox(
+        "Pilih Kelurahan",
+        options=kelurahan_list,
+        index=k_idx,
+        help="Pilih kelurahan spesifik"
+    )
+    
+    selected_kelurahan = [] if selected_kelurahan_raw == "--- Semua Kelurahan ---" else [selected_kelurahan_raw]
+    
+    selected_lingkungan = []
+    selected_rt = []
+
+    if selected_kelurahan:
+        ling_raw_list = ["--- Semua Lingkungan ---"] + boundary_mgr.get_lingkungan_list(selected_district, selected_kelurahan)
+        
+        # Auto-index for Lingkungan if global search is used
+        l_idx = 0
+        if parent_info.get('lingkungan'):
+            l_idx = ling_raw_list.index(parent_info['lingkungan']) if parent_info['lingkungan'] in ling_raw_list else 0
+
+        selected_lingkungan_raw = st.sidebar.selectbox(
+            "Pilih Lingkungan",
+            options=ling_raw_list,
+            index=l_idx,
+            help="Pilih lingkungan spesifik"
+        )
+        
+        selected_lingkungan = [] if selected_lingkungan_raw == "--- Semua Lingkungan ---" else [selected_lingkungan_raw]
+        
+        if selected_lingkungan:
+            rt_list = boundary_mgr.get_rt_list(selected_district, selected_kelurahan, selected_lingkungan)
+            
+            # If global search selected an RT, use it as default
+            rt_defaults = []
+            if selected_global_search != "--- Cari Wilayah / RT ---":
+                # Extract RT part from "RT 001 LINGKUNGAN X"
+                rt_part = selected_global_search.split(' LINGKUNGAN ')[0].strip() if ' LINGKUNGAN ' in selected_global_search else selected_global_search
+                if rt_part in rt_list:
+                    rt_defaults = [rt_part]
+
+            selected_rt = st.sidebar.multiselect(
+                "🏠 Filter RT",
+                options=rt_list,
+                default=rt_defaults,
+                help="Pilih RT spesifik (filter terbawah)"
+            )
+            
+            if selected_rt:
+                st.sidebar.info(f"📍 Fokus: {len(selected_rt)} RT")
+            else:
+                st.sidebar.info(f"📍 Fokus: {selected_lingkungan_raw}")
+        else:
+            st.sidebar.info(f"📍 Fokus: {selected_kelurahan_raw}")
+except Exception as e:
+    st.sidebar.error(f"Error loading boundaries: {e}")
+    selected_kelurahan = []
+    selected_lingkungan = []
+    selected_rt = []
+
+# 3. Map Visual Controls (Bottom)
 st.sidebar.header("🗺️ Kontrol Peta")
 map_background = st.sidebar.radio(
     "Background Peta",
@@ -138,9 +217,9 @@ map_background = st.sidebar.radio(
 )
 
 show_boundaries = st.sidebar.checkbox(
-    "Tampilkan Batas Wilayah",
+    "Tampilkan Garis Batas",
     value=True,
-    help="Tampilkan batas kelurahan/desa"
+    help="Tampilkan garis batas wilayah di peta"
 )
 
 boundary_opacity = st.sidebar.slider(
@@ -148,68 +227,8 @@ boundary_opacity = st.sidebar.slider(
     min_value=0.0,
     max_value=1.0,
     value=0.6,
-    step=0.1,
-    help="Atur transparansi garis batas"
+    step=0.1
 )
-
-# Kelurahan Filter
-if show_boundaries:
-    from modules.boundary_manager import BoundaryManager
-    from config.bkd_config import BOUNDARY_GEOJSON_PATH
-    
-    try:
-        boundary_mgr = BoundaryManager(BOUNDARY_GEOJSON_PATH)
-        kelurahan_list = boundary_mgr.get_kelurahan_list(selected_district)
-        
-        selected_kelurahan = st.sidebar.multiselect(
-            "🏘️ Filter Kelurahan",
-            options=kelurahan_list,
-            default=[],
-            help="Pilih kelurahan untuk fokus analisis (kosong = semua)"
-        )
-        
-        if selected_kelurahan:
-            # 2. Lingkungan Filter (New)
-            lingkungan_list = boundary_mgr.get_lingkungan_list(selected_district, selected_kelurahan)
-            selected_lingkungan = st.sidebar.multiselect(
-                "🏘️ Filter Lingkungan",
-                options=lingkungan_list,
-                default=[],
-                help="Pilih lingkungan spesifik (filter turunan dari kelurahan)"
-            )
-            
-            if selected_lingkungan:
-                # 3. RT Filter (New)
-                rt_list = boundary_mgr.get_rt_list(selected_district, selected_kelurahan, selected_lingkungan)
-                selected_rt = st.sidebar.multiselect(
-                    "🏠 Filter RT",
-                    options=rt_list,
-                    default=[],
-                    help="Pilih RT spesifik (filter turunan dari lingkungan)"
-                )
-                
-                if selected_rt:
-                    st.sidebar.info(f"📍 Fokus: {len(selected_rt)} RT di {len(selected_lingkungan)} Lingkungan")
-                else:
-                    st.sidebar.info(f"📍 Fokus: {len(selected_lingkungan)} Lingkungan")
-            else:
-                selected_rt = []
-                st.sidebar.info(f"📍 Fokus: {len(selected_kelurahan)} kelurahan")
-        else:
-            selected_lingkungan = []
-            selected_rt = []
-            
-    except Exception as e:
-        st.sidebar.error(f"Error loading boundaries: {e}")
-        selected_kelurahan = []
-        selected_lingkungan = []
-        selected_rt = []
-        boundary_mgr = None
-else:
-    selected_kelurahan = []
-    selected_lingkungan = []
-    selected_rt = []
-    boundary_mgr = None
 
 
 # Create ROI safely
@@ -264,14 +283,16 @@ def create_map_with_controls(lat, lon, zoom, background_type, show_boundaries_fl
     
     return m
 
-def add_boundary_overlay(m, district_name, selected_kelurahans=None, opacity=0.6):
+def add_boundary_overlay(m, district_name, kelurahan=None, lingkungan=None, rt=None, opacity=0.6):
     """
-    Add boundary overlay to Folium map with optional kelurahan filtering
+    Add boundary overlay to Folium map with granular filtering
     
     Args:
         m: Folium Map object
         district_name: Name of district
-        selected_kelurahans: List of kelurahan names to show (None = show all)
+        kelurahan: Optional selected kelurahan (list)
+        lingkungan: Optional selected lingkungan (list)
+        rt: Optional selected RT (list)
         opacity: Opacity of boundary lines
     
     Returns:
@@ -286,10 +307,30 @@ def add_boundary_overlay(m, district_name, selected_kelurahans=None, opacity=0.6
         boundaries = boundary_mgr.get_boundaries_by_district(district_name)
         
         for boundary in boundaries:
-            # Skip if filtering is active and this kelurahan is not selected
-            if selected_kelurahans and len(selected_kelurahans) > 0:
-                if boundary['properties']['nmdesa'] not in selected_kelurahans:
-                    continue
+            nmdesa = boundary['properties']['nmdesa']
+            nmsls = boundary['properties']['nmsls']
+            
+            # CRITICAL: Prioritize most granular selection for visualization
+            visible = True
+            
+            if rt and len(rt) > 0:
+                # If RT is selected, only show matching RTs
+                # Pattern match: starts with any of RT names
+                is_rt_match = any(nmsls.startswith(f"{r} ") or nmsls == r for r in rt)
+                if not is_rt_match:
+                    visible = False
+            elif lingkungan and len(lingkungan) > 0:
+                # If Lingkungan is selected, only show matching Lingkungans
+                is_lingkungan_match = any(f" LINGKUNGAN {l}" in nmsls or nmsls == l for l in lingkungan)
+                if not is_lingkungan_match:
+                    visible = False
+            elif kelurahan and len(kelurahan) > 0:
+                # If only Kelurahan is selected
+                if nmdesa not in kelurahan:
+                    visible = False
+            
+            if not visible:
+                continue
                     
             folium.GeoJson(
                 boundary,
@@ -312,38 +353,22 @@ def add_boundary_overlay(m, district_name, selected_kelurahans=None, opacity=0.6
 
 def add_map_legend(m, show_boundaries_flag=True):
     """
-    Add responsive legend to Folium map
+    Add legend to Folium map
+    
+    Args:
+        m: Folium Map object
+        show_boundaries_flag: Whether boundaries are shown
+    
+    Returns:
+        Modified Folium Map object
     """
     legend_html = '''
-    <style>
-        .map-legend {
-            position: fixed; 
-            bottom: 50px; right: 50px; width: 220px; height: auto; 
-            background-color: white; z-index:9999; font-size:13px;
-            border:2px solid grey; border-radius: 5px; padding: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        /* Style khusus untuk HP (Mobile) */
-        @media only screen and (max-width: 600px) {
-            .map-legend {
-                bottom: 5px !important;
-                right: 5px !important;
-                width: 140px !important;
-                font-size: 9px !important;
-                padding: 6px !important;
-                border-width: 1px !important;
-            }
-            .map-legend p {
-                margin: 2px 0 !important;
-            }
-            .map-legend-header {
-                font-size: 10px !important;
-                margin-bottom: 4px !important;
-            }
-        }
-    </style>
-    <div class="map-legend">
-    <p class="map-legend-header" style="margin: 0 0 8px 0; font-weight: bold; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">📍 Legenda</p>
+    <div style="position: fixed; 
+                bottom: 50px; right: 50px; width: 220px; height: auto; 
+                background-color: white; z-index:9999; font-size:13px;
+                border:2px solid grey; border-radius: 5px; padding: 12px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+    <p style="margin: 0 0 8px 0; font-weight: bold; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">📍 Legenda</p>
     '''
     
     if show_boundaries_flag:
@@ -355,13 +380,13 @@ def add_map_legend(m, show_boundaries_flag=True):
     
     legend_html += '''
     <p style="margin: 5px 0;">
-        <span style="background-color: #FFD700; padding: 2px 10px; border-radius: 3px;">  </span> Lahan Parkir
+        <span style="background-color: #FFD700; padding: 2px 12px; border-radius: 3px;">  </span> Lahan Parkir
     </p>
     <p style="margin: 5px 0;">
-        <span style="background-color: #ef4444; padding: 2px 10px; border-radius: 3px;">  </span> Alih Fungsi Lahan
+        <span style="background-color: #ef4444; padding: 2px 12px; border-radius: 3px;">  </span> Alih Fungsi Lahan
     </p>
     <p style="margin: 5px 0;">
-        <span style="background-color: #3b82f6; padding: 2px 10px; border-radius: 3px;">  </span> Bangunan Baru
+        <span style="background-color: #3b82f6; padding: 2px 12px; border-radius: 3px;">  </span> Bangunan Baru
     </p>
     </div>
     '''
@@ -392,12 +417,9 @@ with tab1:
     st.markdown("Deteksi dan kalkulasi potensi retribusi parkir dari citra satelit")
     
     if st.button("🔍 Analisis Lahan Parkir", key="btn_parking"):
-        with st.spinner("Memproses data satelit..."):
-            # Detect parking areas
-            if use_dummy_data:
-                parking_data = parking_detector._generate_dummy_parking_data(roi)
-            else:
-                parking_data = parking_detector.detect_parking_areas(roi, year_current)
+        with st.spinner("Memproses data satelit (Gedung & Area Terbuka)..."):
+            # Detect parking areas directly from real data
+            parking_data = parking_detector.detect_parking_areas(roi, year_current)
             
             # Store in session state
             st.session_state['parking_data'] = parking_data
@@ -406,9 +428,9 @@ with tab1:
     if 'parking_data' in st.session_state:
         data = st.session_state['parking_data']
         
-        # Apply spatial filter
-        if selected_kelurahan and boundary_mgr:
-            data['parking_areas'] = boundary_mgr.spatial_filter(data['parking_areas'], selected_kelurahan, selected_lingkungan, selected_rt)
+        # Apply spatial filter (Always apply for boundary capping)
+        if boundary_mgr:
+            data['parking_areas'] = boundary_mgr.spatial_filter(data['parking_areas'], selected_district, selected_kelurahan, selected_lingkungan, selected_rt)
             
             # Recalculate metrics
             data['count'] = len(data['parking_areas'])
@@ -436,7 +458,7 @@ with tab1:
         
         # Add boundary overlay if enabled
         if show_boundaries:
-            m = add_boundary_overlay(m, selected_district, selected_kelurahan, boundary_opacity)
+            m = add_boundary_overlay(m, selected_district, selected_kelurahan, selected_lingkungan, selected_rt, boundary_opacity)
         
         # Add parking areas
         for parking in data['parking_areas']:
@@ -503,12 +525,9 @@ with tab2:
     st.markdown(f"Deteksi perubahan penggunaan lahan: **{year_baseline}** → **{year_current}**")
     
     if st.button("🔍 Analisis Perubahan Lahan", key="btn_landuse"):
-        with st.spinner("Memproses data temporal..."):
-            # Analyze land use change
-            if use_dummy_data:
-                landuse_data = landuse_analyzer._generate_dummy_change_data(roi, year_baseline, year_current)
-            else:
-                landuse_data = landuse_analyzer.analyze_land_change(roi, year_baseline, year_current)
+        with st.spinner("Memproses data temporal (Sentinel-2 & Dynamic World)..."):
+            # Analyze real land use change
+            landuse_data = landuse_analyzer.analyze_land_change(roi, year_baseline, year_current)
             
             # --- AI VALIDATION STEP ---
             # Enrich the detected changes with AI validation
@@ -537,9 +556,9 @@ with tab2:
     if 'landuse_data' in st.session_state:
         data = st.session_state['landuse_data']
         
-        # Apply spatial filter
-        if selected_kelurahan and boundary_mgr:
-            data['changes'] = boundary_mgr.spatial_filter(data['changes'], selected_kelurahan, selected_lingkungan, selected_rt)
+        # Apply spatial filter (Always apply for boundary capping)
+        if boundary_mgr:
+            data['changes'] = boundary_mgr.spatial_filter(data['changes'], selected_district, selected_kelurahan, selected_lingkungan, selected_rt)
             
             # Recalculate tax potential after filtering
             total_annual = sum(c.get('estimated_pbb', 0) for c in data['changes'])
@@ -572,7 +591,7 @@ with tab2:
         
         # Add boundary overlay if enabled
         if show_boundaries:
-            m = add_boundary_overlay(m, selected_district, selected_kelurahan, boundary_opacity)
+            m = add_boundary_overlay(m, selected_district, selected_kelurahan, selected_lingkungan, selected_rt, boundary_opacity)
         
         # Priority colors
         priority_colors = {
@@ -673,12 +692,9 @@ with tab3:
     st.markdown(f"Deteksi perubahan bangunan: **{year_baseline}** → **{year_current}**")
     
     if st.button("🔍 Analisis Perubahan Bangunan", key="btn_pbb"):
-        with st.spinner("Memproses data bangunan..."):
-            # Monitor building changes
-            if use_dummy_data:
-                pbb_data = pbb_monitor._generate_dummy_building_changes(roi, year_baseline, year_current)
-            else:
-                pbb_data = pbb_monitor.monitor_building_changes(roi, year_baseline, year_current)
+        with st.spinner("Memproses data bangunan (Google Open Buildings)..."):
+            # Monitor actual building changes
+            pbb_data = pbb_monitor.monitor_building_changes(roi, year_baseline, year_current)
             
             st.session_state['pbb_data'] = pbb_data
     
@@ -686,9 +702,9 @@ with tab3:
     if 'pbb_data' in st.session_state:
         data = st.session_state['pbb_data']
         
-        # Apply spatial filter
-        if selected_kelurahan and boundary_mgr:
-            filtered_changes = boundary_mgr.spatial_filter(data['changes'], selected_kelurahan, selected_lingkungan, selected_rt)
+        # Apply spatial filter (Always apply for boundary capping)
+        if boundary_mgr:
+            filtered_changes = boundary_mgr.spatial_filter(data['changes'], selected_district, selected_kelurahan, selected_lingkungan, selected_rt)
             data['changes'] = filtered_changes
             
             # Recalculate tax impact after filtering
@@ -722,7 +738,7 @@ with tab3:
         
         # Add boundary overlay if enabled
         if show_boundaries:
-            m = add_boundary_overlay(m, selected_district, selected_kelurahan, boundary_opacity)
+            m = add_boundary_overlay(m, selected_district, selected_kelurahan, selected_lingkungan, selected_rt, boundary_opacity)
         
         # Add building changes
         for building in data['changes']:
@@ -1116,7 +1132,6 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #6b7280; font-size: 12px;'>
     <p>Sistem Monitoring PAD - Badan Keuangan Daerah Kota Mataram</p>
-    <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: {}</p>
+    <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: Real-time</p>
 </div>
-""".format("Simulasi (Demo)" if use_dummy_data else "Real-time"), unsafe_allow_html=True)
-
+""", unsafe_allow_html=True)
