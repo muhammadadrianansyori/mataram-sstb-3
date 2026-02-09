@@ -267,15 +267,26 @@ def create_map_with_controls(lat, lon, zoom, background_type, show_boundaries_fl
 def add_boundary_overlay(m, district_name, selected_kelurahans=None, opacity=0.6):
     """
     Add boundary overlay to Folium map with optional kelurahan filtering
+    
+    Args:
+        m: Folium Map object
+        district_name: Name of district
+        selected_kelurahans: List of kelurahan names to show (None = show all)
+        opacity: Opacity of boundary lines
+    
+    Returns:
+        Modified Folium Map object
     """
     if boundary_mgr is None:
         return m
     
     try:
+        from config.bkd_config import BOUNDARY_STYLES
+        
         boundaries = boundary_mgr.get_boundaries_by_district(district_name)
         
         for boundary in boundaries:
-            # FILTER: Hanya tampilkan jika kelurahan dipilih, atau tampilkan semua jika kosong
+            # Skip if filtering is active and this kelurahan is not selected
             if selected_kelurahans and len(selected_kelurahans) > 0:
                 if boundary['properties']['nmdesa'] not in selected_kelurahans:
                     continue
@@ -295,7 +306,7 @@ def add_boundary_overlay(m, district_name, selected_kelurahans=None, opacity=0.6
                 )
             ).add_to(m)
     except Exception as e:
-        st.error(f"Error drawing boundaries: {e}")
+        print(f"Error adding boundaries: {e}")
     
     return m
 
@@ -545,7 +556,7 @@ with tab2:
         
         # Add boundary overlay if enabled
         if show_boundaries:
-            m = add_boundary_overlay(m, selected_district, boundary_opacity)
+            m = add_boundary_overlay(m, selected_district, selected_kelurahan, boundary_opacity)
         
         # Priority colors
         priority_colors = {
@@ -695,7 +706,7 @@ with tab3:
         
         # Add boundary overlay if enabled
         if show_boundaries:
-            m = add_boundary_overlay(m, selected_district, boundary_opacity)
+            m = add_boundary_overlay(m, selected_district, selected_kelurahan, boundary_opacity)
         
         # Add building changes
         for building in data['changes']:
@@ -1092,4 +1103,3 @@ st.markdown("""
     <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: {}</p>
 </div>
 """.format("Simulasi (Demo)" if use_dummy_data else "Real-time"), unsafe_allow_html=True)
-
