@@ -7,6 +7,7 @@ from google.oauth2 import service_account
 def initialize_gee():
     """
     Menginisialisasi Google Earth Engine dengan strategi fallback dan penanganan Streamlit Secrets.
+    Sangat penting: Menyertakan scopes Earth Engine secara eksplisit.
     """
     # Strategi 0: Cek Streamlit Secrets (Paling Utama untuk Cloud Deployment)
     try:
@@ -19,8 +20,14 @@ def initialize_gee():
                 if 'private_key' in sa_info:
                     sa_info['private_key'] = sa_info['private_key'].replace('\\n', '\n')
                 
+                # Tambahkan scope Earth Engine secara eksplisit agar tidak 'invalid_scope'
+                scopes = ['https://www.googleapis.com/auth/earthengine']
+                
                 # Gunakan google-auth untuk membuat kredensial yang valid
-                credentials = service_account.Credentials.from_service_account_info(sa_info)
+                credentials = service_account.Credentials.from_service_account_info(
+                    sa_info, 
+                    scopes=scopes
+                )
                 
                 # Inisialisasi dengan project_id yang ada di file JSON
                 project_id = sa_info.get("project_id", "ee-streamlit-mataram")
@@ -28,66 +35,42 @@ def initialize_gee():
                 ee.Initialize(credentials=credentials, project=project_id)
                 st.success(f"✅ Terhubung via Streamlit Secrets (Project: {project_id})")
                 return True
+                
             except Exception as e:
                 st.error(f"❌ Autentikasi Gagal: {e}")
                 st.code(f"Debug Info: {type(e).__name__}")
                 return False
     except Exception as e:
-        # Jika bukan di Streamlit Cloud atau secrets tidak ada, lanjut ke strategi berikutnya
+        # Lanjut ke strategi berikutnya jika bukan di Streamlit Cloud
         pass
 
-    # Strategi 1: Cek environment variables (untuk deployment manual)
+    # Strategi 1: Cek environment variables (untuk deployment manual lainnya)
     if os.environ.get('GEE_SERVICE_ACCOUNT'):
         try:
             sa_info = json.loads(os.environ.get('GEE_SERVICE_ACCOUNT'))
             if 'private_key' in sa_info:
                 sa_info['private_key'] = sa_info['private_key'].replace('\\n', '\n')
-            credentials = service_account.Credentials.from_service_account_info(sa_info)
+            
+            scopes = ['https://www.googleapis.com/auth/earthengine']
+            credentials = service_account.Credentials.from_service_account_info(sa_info, scopes=scopes)
             ee.Initialize(credentials=credentials, project=sa_info.get('project_id'))
-            st.success("✅ Terhubung via Environment Variable")
             return True
         except:
             pass
 
-    # Strategi 2: Cek kredensial lokal (untuk development)
+    # Strategi 2: Cek kredensial lokal (untuk development di komputer sendiri)
     try:
-        # Coba inisialisasi default (gcloud auth)
+        # Mencoba inisialisasi default (misal gcloud auth)
         ee.Initialize(project="mataram-sstb")
-        st.success("✅ Terhubung ke Google Earth Engine (Lokal/Default)")
         return True
-    except Exception as e1:
-        # Cek jika project tidak ditemukan
-        if "project" in str(e1).lower():
-            cred_path = os.path.expanduser("~/.config/earthengine/credentials")
-            if os.path.exists(cred_path):
-                try:
-                    with open(cred_path, 'r') as f:
-                        creds = json.load(f)
-                        project = creds.get('project_id') or creds.get('project')
-                        if project:
-                            ee.Initialize(project=project)
-                            st.success(f"✅ Terhubung menggunakan project: {project}")
-                            return True
-                except:
-                    pass
-        
-        # Jika semua gagal, tampilkan panduan troubleshooting
-        st.warning("⚠️ Earth Engine belum terkonfigurasi.")
-        with st.expander("🔧 Cara Konfigurasi (Streamlit Cloud)"):
-            st.markdown("""
-            Untuk menjalankan di Streamlit Cloud, Anda perlu menambahkan **Secrets**:
-            1. Buka Dashboard Streamlit Cloud -> Settings -> Secrets
-            2. Tambahkan isi file JSON Service Account Anda seperti ini:
-            ```toml
-            [gee_service_account]
-            type = "service_account"
-            project_id = "your-project-id"
-            private_key_id = "..."
-            private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
-            client_email = "..."
-            client_id = "..."
-            # ... tambahkan semua field dari JSON Anda
-            ```
-            **Penting:** Gunakan `\\n` (dua backslash) untuk karakter baris baru di dalam `private_key`.
-            """)
+    except:
+        return False
+
+# Fungsi tambahan (jika diperlukan oleh modul lain)
+def get_gee_status():
+    """Mengecek apakah GEE sudah terinisialisasi"""
+    try:
+        ee.Projection('EPSG:4326')
+        return True
+    except:
         return False
