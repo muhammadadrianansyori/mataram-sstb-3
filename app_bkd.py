@@ -312,22 +312,38 @@ def add_boundary_overlay(m, district_name, selected_kelurahans=None, opacity=0.6
 
 def add_map_legend(m, show_boundaries_flag=True):
     """
-    Add legend to Folium map
-    
-    Args:
-        m: Folium Map object
-        show_boundaries_flag: Whether boundaries are shown
-    
-    Returns:
-        Modified Folium Map object
+    Add responsive legend to Folium map
     """
     legend_html = '''
-    <div style="position: fixed; 
-                bottom: 50px; right: 50px; width: 220px; height: auto; 
-                background-color: white; z-index:9999; font-size:13px;
-                border:2px solid grey; border-radius: 5px; padding: 12px;
-                box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-    <p style="margin: 0 0 8px 0; font-weight: bold; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">📍 Legenda</p>
+    <style>
+        .map-legend {
+            position: fixed; 
+            bottom: 50px; right: 50px; width: 220px; height: auto; 
+            background-color: white; z-index:9999; font-size:13px;
+            border:2px solid grey; border-radius: 5px; padding: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        /* Style khusus untuk HP (Mobile) */
+        @media only screen and (max-width: 600px) {
+            .map-legend {
+                bottom: 5px !important;
+                right: 5px !important;
+                width: 140px !important;
+                font-size: 9px !important;
+                padding: 6px !important;
+                border-width: 1px !important;
+            }
+            .map-legend p {
+                margin: 2px 0 !important;
+            }
+            .map-legend-header {
+                font-size: 10px !important;
+                margin-bottom: 4px !important;
+            }
+        }
+    </style>
+    <div class="map-legend">
+    <p class="map-legend-header" style="margin: 0 0 8px 0; font-weight: bold; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">📍 Legenda</p>
     '''
     
     if show_boundaries_flag:
@@ -339,13 +355,13 @@ def add_map_legend(m, show_boundaries_flag=True):
     
     legend_html += '''
     <p style="margin: 5px 0;">
-        <span style="background-color: #FFD700; padding: 2px 12px; border-radius: 3px;">  </span> Lahan Parkir
+        <span style="background-color: #FFD700; padding: 2px 10px; border-radius: 3px;">  </span> Lahan Parkir
     </p>
     <p style="margin: 5px 0;">
-        <span style="background-color: #ef4444; padding: 2px 12px; border-radius: 3px;">  </span> Alih Fungsi Lahan
+        <span style="background-color: #ef4444; padding: 2px 10px; border-radius: 3px;">  </span> Alih Fungsi Lahan
     </p>
     <p style="margin: 5px 0;">
-        <span style="background-color: #3b82f6; padding: 2px 12px; border-radius: 3px;">  </span> Bangunan Baru
+        <span style="background-color: #3b82f6; padding: 2px 10px; border-radius: 3px;">  </span> Bangunan Baru
     </p>
     </div>
     '''
@@ -1103,3 +1119,4 @@ st.markdown("""
     <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: {}</p>
 </div>
 """.format("Simulasi (Demo)" if use_dummy_data else "Real-time"), unsafe_allow_html=True)
+
