@@ -128,31 +128,27 @@ boundary_mgr = None
 try:
     boundary_mgr = BoundaryManager(BOUNDARY_GEOJSON_PATH)
     
-    # --- NEW: Global SLS Search (No Guessing) ---
-    all_sls = ["--- Cari Wilayah / RT ---"] + boundary_mgr.get_all_sls_in_district(selected_district)
-    selected_global_search = st.sidebar.selectbox(
-        "🔍 Cari RT Lintas Kelurahan",
-        options=all_sls,
-        help="Ketik untuk mencari RT/Lingkungan tertentu tanpa harus pilih kelurahan"
-    )
-    
+    # --- State Sync Logic ---
+    # Read global search value from session state to drive hierarchical indices
+    gs_val = st.session_state.get('gs_sls_search', "--- Cari Wilayah / RT ---")
     parent_info = {}
-    if selected_global_search != "--- Cari Wilayah / RT ---":
-        parent_info = boundary_mgr.get_parent_info_by_sls(selected_global_search, selected_district)
+    if gs_val != "--- Cari Wilayah / RT ---":
+        parent_info = boundary_mgr.get_parent_info_by_sls(gs_val, selected_district)
     
-    # --- Hierarchical Filters ---
+    # --- 📋 METODE 1: PILIH MANUAL (BERTAHAP) ---
+    st.sidebar.markdown("### 📋 Pilih Wilayah (Bertahap)")
+    
+    # 1. Kelurahan
     kelurahan_list = ["--- Semua Kelurahan ---"] + boundary_mgr.get_kelurahan_list(selected_district)
-    
-    # Auto-index for Kelurahan if global search is used
     k_idx = 0
-    if parent_info.get('kelurahan'):
-        k_idx = kelurahan_list.index(parent_info['kelurahan']) if parent_info['kelurahan'] in kelurahan_list else 0
-
+    if parent_info.get('kelurahan') in kelurahan_list:
+        k_idx = kelurahan_list.index(parent_info['kelurahan'])
+        
     selected_kelurahan_raw = st.sidebar.selectbox(
         "Pilih Kelurahan",
         options=kelurahan_list,
         index=k_idx,
-        help="Pilih kelurahan spesifik"
+        help="Pilih kelurahan terlebih dahulu"
     )
     
     selected_kelurahan = [] if selected_kelurahan_raw == "--- Semua Kelurahan ---" else [selected_kelurahan_raw]
@@ -161,38 +157,37 @@ try:
     selected_rt = []
 
     if selected_kelurahan:
+        # 2. Lingkungan (Single Select)
         ling_raw_list = ["--- Semua Lingkungan ---"] + boundary_mgr.get_lingkungan_list(selected_district, selected_kelurahan)
-        
-        # Auto-index for Lingkungan if global search is used
         l_idx = 0
-        if parent_info.get('lingkungan'):
-            l_idx = ling_raw_list.index(parent_info['lingkungan']) if parent_info['lingkungan'] in ling_raw_list else 0
+        if parent_info.get('lingkungan') in ling_raw_list:
+            l_idx = ling_raw_list.index(parent_info['lingkungan'])
 
         selected_lingkungan_raw = st.sidebar.selectbox(
             "Pilih Lingkungan",
             options=ling_raw_list,
             index=l_idx,
-            help="Pilih lingkungan spesifik"
+            help="Pilih lingkungan spesifik (Data: SLS)"
         )
         
         selected_lingkungan = [] if selected_lingkungan_raw == "--- Semua Lingkungan ---" else [selected_lingkungan_raw]
         
         if selected_lingkungan:
+            # 3. RT (Multi Select)
             rt_list = boundary_mgr.get_rt_list(selected_district, selected_kelurahan, selected_lingkungan)
             
-            # If global search selected an RT, use it as default
             rt_defaults = []
-            if selected_global_search != "--- Cari Wilayah / RT ---":
-                # Extract RT part from "RT 001 LINGKUNGAN X"
-                rt_part = selected_global_search.split(' LINGKUNGAN ')[0].strip() if ' LINGKUNGAN ' in selected_global_search else selected_global_search
+            if gs_val != "--- Cari Wilayah / RT ---":
+                # Auto-check the RT if it matches the searched SLS
+                rt_part = gs_val.split(' LINGKUNGAN ')[0].strip() if ' LINGKUNGAN ' in gs_val else gs_val
                 if rt_part in rt_list:
                     rt_defaults = [rt_part]
 
             selected_rt = st.sidebar.multiselect(
-                "🏠 Filter RT",
+                "Filter RT (Opsional)",
                 options=rt_list,
                 default=rt_defaults,
-                help="Pilih RT spesifik (filter terbawah)"
+                help="Pilih satu atau lebih RT"
             )
             
             if selected_rt:
@@ -201,8 +196,21 @@ try:
                 st.sidebar.info(f"📍 Fokus: {selected_lingkungan_raw}")
         else:
             st.sidebar.info(f"📍 Fokus: {selected_kelurahan_raw}")
+    
+    # --- 🔍 METODE 2: PENCARIAN EKSPRES ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ⚡ Pencarian Instan (Tanpa Menebak)")
+    
+    all_sls = ["--- Cari Wilayah / RT ---"] + boundary_mgr.get_all_sls_in_district(selected_district)
+    st.sidebar.selectbox(
+        "Cari RT Lintas Kelurahan",
+        options=all_sls,
+        key='gs_sls_search',
+        help="Ketik dan pilih RT untuk memfilter wilayah secara cepat"
+    )
+    
 except Exception as e:
-    st.sidebar.error(f"Error loading boundaries: {e}")
+    st.sidebar.error(f"Error pada filter wilayah: {e}")
     selected_kelurahan = []
     selected_lingkungan = []
     selected_rt = []
