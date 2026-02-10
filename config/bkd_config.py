@@ -208,5 +208,24 @@ BOUNDARY_STYLES = {
 }
 
 # Path to GeoJSON boundary data
-BOUNDARY_GEOJSON_PATH = 'd:/bps/5271sls.geojson'
+# Path to GeoJSON boundary data
+# START DEBUGGING CLOUD (Smart Path Finding)
+import os
+
+# Coba cari file di beberapa kemungkinan lokasi standard Streamlit
+possible_paths = [
+    '5271sls.geojson',  # Root (Current wdir)
+    './5271sls.geojson',
+    os.path.join(os.getcwd(), '5271sls.geojson'),
+    # Relative to config folder (jika file ini ada di folder config)
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '5271sls.geojson'),
+]
+
+BOUNDARY_GEOJSON_PATH = '5271sls.geojson' # Default fallback
+for p in possible_paths:
+    if os.path.exists(p):
+        BOUNDARY_GEOJSON_PATH = p
+        break
+# END DEBUGGING CLOUD
+
 
