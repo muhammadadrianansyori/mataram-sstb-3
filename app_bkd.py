@@ -5,7 +5,6 @@ Sistem monitoring Pendapatan Asli Daerah untuk Badan Keuangan Daerah
 
 import streamlit as st
 
-from streamlit_folium import st_folium
 import folium
 from folium import plugins
 import ee
@@ -437,20 +436,49 @@ with tab1:
     # Contextual Year Selection
     year_analysis = st.selectbox("📅 Pilih Tahun Analisis", list(range(2015, 2026)), index=9, help="Pilih tahun data satelit yang ingin dianalisis")
 
+    # ---------------------------------------------------------
+    # MODIFIKASI: EKSEKUSI TERTUNDA (DEFERRED EXECUTION)
+    # ---------------------------------------------------------
+    
+    # 1. Inisialisasi State Awal (Default Ampenan)
+    if 'active_district' not in st.session_state:
+        st.session_state['active_district'] = 'Ampenan'
+        st.session_state['active_kelurahan'] = []
+        st.session_state['active_lingkungan'] = []
+        st.session_state['active_rt'] = []
+
+    # 2. Tombol Analisis: Update STATE "Aktif" dengan Pilihan Sidebar
     if st.button("🔍 Analisis Lahan Parkir", key="btn_parking"):
+        st.session_state['active_district'] = selected_district
+        st.session_state['active_kelurahan'] = selected_kelurahan
+        st.session_state['active_lingkungan'] = selected_lingkungan
+        st.session_state['active_rt'] = selected_rt
+        
         # Use a separate function for caching to work properly
         # We need to make sure arguments are hashable. roi is ee.Geometry (not easily hashable).
         # So we cache based on district/kelurahan names (strings) + year.
         
         @st.cache_data(show_spinner=False, ttl=3600)
         def convert_roi_and_detect(dist_name, kel_name, year):
-            # This runs only if cache misses
-            return parking_detector.detect_parking_areas(roi, year)
+            # Gunakan 'active_district' untuk ROI
+            roi_config = MATARAM_DISTRICTS[dist_name]
+            
+            # Re-create ROI based on active selection (since 'roi' var is from sidebar)
+            # This ensures consistency with the active district
+            active_roi = ee.Geometry.Point([roi_config['lon'], roi_config['lat']]).buffer(roi_config['radius'])
+            
+            # Try to get specific boundary if kelurahan is selected
+            if kel_name != "ALL" and boundary_mgr:
+                 kel_boundary = boundary_mgr.get_boundary_by_kelurahan(kel_name)
+                 if kel_boundary:
+                     active_roi = ee.Geometry(kel_boundary['geometry'])
 
-        with st.spinner(f"Memproses data satelit tahun {year_analysis}..."):
+            return parking_detector.detect_parking_areas(active_roi, year)
+
+        with st.spinner(f"Memproses data satelit tahun {year_analysis} untuk {st.session_state['active_district']}..."):
             # Use strings for caching key
-            kel_key = selected_kelurahan[0] if selected_kelurahan else "ALL"
-            parking_data = convert_roi_and_detect(selected_district, kel_key, year_analysis)
+            kel_key = st.session_state['active_kelurahan'][0] if st.session_state['active_kelurahan'] else "ALL"
+            parking_data = convert_roi_and_detect(st.session_state['active_district'], kel_key, year_analysis)
             
             # Store in session state
             st.session_state['parking_data'] = parking_data
@@ -502,8 +530,15 @@ with tab1:
         data = st.session_state['parking_data']
         
         # Apply spatial filter (Always apply for boundary capping)
+        # BUG FIX: Use ACTIVE filters, not Sidebar filters
         if boundary_mgr:
-            data['parking_areas'] = boundary_mgr.spatial_filter(data['parking_areas'], selected_district, selected_kelurahan, selected_lingkungan, selected_rt)
+            data['parking_areas'] = boundary_mgr.spatial_filter(
+                data['parking_areas'], 
+                st.session_state['active_district'], 
+                st.session_state['active_kelurahan'], 
+                st.session_state['active_lingkungan'], 
+                st.session_state['active_rt']
+            )
             
             # Filter only AI Verified (Optional but recommended for accuracy)
             verified_areas = [p for p in data['parking_areas'] if p.get('ai_validation', {}).get('verified', False) or p.get('source') == 'OpenStreetMap']
@@ -527,20 +562,29 @@ with tab1:
         col4.metric("🧠 AI Status", "Verified" if len(data['parking_areas']) > 0 else "N/A")
         
         # Map
-        st.subheader("🗺️ Peta Lokasi Parkir")
+        st.subheader(f"🗺️ Peta Lokasi Parkir: {st.session_state['active_district']}")
         
-        # Create map with user-selected background
+        # Create map with user-selected background but ACTIVE location
+        active_config = MATARAM_DISTRICTS[st.session_state['active_district']]
+        
         m = create_map_with_controls(
-            district_config['lat'],
-            district_config['lon'],
+            active_config['lat'],
+            active_config['lon'],
             15,
             map_background,
             show_boundaries
         )
         
-        # Add boundary overlay if enabled
+        # Add boundary overlay if enabled (Use ACTIVE filters)
         if show_boundaries:
-            m = add_boundary_overlay(m, selected_district, selected_kelurahan, selected_lingkungan, selected_rt, boundary_opacity)
+            m = add_boundary_overlay(
+                m, 
+                st.session_state['active_district'], 
+                st.session_state['active_kelurahan'], 
+                st.session_state['active_lingkungan'], 
+                st.session_state['active_rt'], 
+                boundary_opacity
+            )
         
         # Add parking areas
         for parking in data['parking_areas']:
@@ -565,17 +609,10 @@ with tab1:
         # Add legend
         m = add_map_legend(m, show_boundaries)
         
-                # Display map
+        # Display map
         import streamlit_folium
         from streamlit_folium import st_folium
-
-        # KODE BARU (Anti-Refresh saat Zoom)
-        st_folium(
-            m, 
-            height=600, 
-            use_container_width=True,
-            returned_objects=[]  # <--- INI AGAR TIDAK REFRESH SAAT DI-ZOOM
-        )
+        st_folium(m, height=600, use_container_width=True, returned_objects=[])
         
         # Data table
         st.subheader("📋 Detail Area Parkir")
@@ -1240,6 +1277,3 @@ st.markdown("""
     <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: Real-time</p>
 </div>
 """, unsafe_allow_html=True)
-
-
-
