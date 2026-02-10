@@ -7,10 +7,12 @@ pandas
 plotly
 openpyxl
 shapely
-google-auth
+
 # AI Dependencies
 transformers
 torch
 torchvision
 Pillow
 numpy
+google-auth
+streamlit-folium
