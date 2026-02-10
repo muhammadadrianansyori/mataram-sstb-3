@@ -566,7 +566,12 @@ with tab1:
         m = add_map_legend(m, show_boundaries)
         
         # Display map (GANTI BARIS INI)
-        st_folium(m, height=600, use_container_width=True)
+        st_folium(
+        m, 
+        height=600, 
+        use_container_width=True, 
+        returned_objects=[]  # <--- INI KUNCINYA (Matikan auto-refresh)
+        )    
         
         # Data table
         st.subheader("📋 Detail Area Parkir")
@@ -1231,4 +1236,5 @@ st.markdown("""
     <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: Real-time</p>
 </div>
 """, unsafe_allow_html=True)
+
 
