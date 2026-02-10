@@ -567,10 +567,31 @@ with tab1:
         # Create map with user-selected background but ACTIVE location
         active_config = MATARAM_DISTRICTS[st.session_state['active_district']]
         
+        # Default Map Center from District Config
+        map_center_lat = active_config['lat']
+        map_center_lon = active_config['lon']
+        map_zoom = 15
+        
+        # AUTO-ZOOM LOGIC: 
+        # If Kelurahan is selected, find its centroid and zoom in
+        if st.session_state['active_kelurahan'] and boundary_mgr:
+            try:
+                kel_name = st.session_state['active_kelurahan'][0]
+                kel_boundary = boundary_mgr.get_boundary_by_kelurahan(kel_name)
+                if kel_boundary:
+                    # Calculate centroid (simple average of bbox or geometry center)
+                    from shapely.geometry import shape
+                    centroid = shape(kel_boundary['geometry']).centroid
+                    map_center_lat = centroid.y
+                    map_center_lon = centroid.x
+                    map_zoom = 16 # Zoom deeper for Kelurahan
+            except Exception as e:
+                print(f"Auto-zoom error: {e}")
+
         m = create_map_with_controls(
-            active_config['lat'],
-            active_config['lon'],
-            15,
+            map_center_lat,
+            map_center_lon,
+            map_zoom,
             map_background,
             show_boundaries
         )
