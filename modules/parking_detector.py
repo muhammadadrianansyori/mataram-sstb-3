@@ -13,90 +13,179 @@ from config.bkd_config import (
     PARKING_TARIFF, PARKING_UTILIZATION, PARKING_HOURS,
     PARKING_MIN_AREA, PARKING_MAX_AREA, PARKING_ASPECT_RATIO
 )
+from modules.osm_bridge import OSMBridge
 
 
 class ParkingDetector:
     """
-    Deteksi area parkir menggunakan:
+    Deteksi area parkir menggunakan metode Hybrid:
     1. Spectral indices (NDBI - untuk impervious surfaces)
     2. Texture analysis (parking lots memiliki texture khas)
-    3. Exclude buildings (Google Open Buildings)
-    4. Size/shape filtering
+    3. POI-Assisted Detection (OpenStreetMap)
     """
     
     def __init__(self):
         self.min_area = PARKING_MIN_AREA
         self.max_area = PARKING_MAX_AREA
+        self.osm = OSMBridge()
         
     def detect_parking_areas(self, roi: ee.Geometry, year: int = 2024) -> Dict:
         """
-        Deteksi area parkir dalam ROI
-        
-        Args:
-            roi: Region of Interest (ee.Geometry)
-            year: Tahun untuk analisis
-            
-        Returns:
-            Dict dengan parking areas dan metadata
+        Deteksi area parkir dalam ROI menggunakan metode Hybrid:
+        1. Visual Spectral Analysis (Satelit)
+        2. POI-Assisted Detection (OpenStreetMap)
         """
         try:
-            # 1. Load Sentinel-2 imagery
-            s2 = self._load_sentinel2(roi, year)
+            # 1. Load Satellite Engine (Primary & Historical)
+            s2_col = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED") \
+                .filterBounds(roi) \
+                .filterDate(f'{year}-01-01', f'{year}-12-31') \
+                .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30)) # Relaxed for Indo climate
             
-            # 2. Calculate spectral indices
-            ndbi = self._calculate_ndbi(s2)  # Built-up index
-            ndvi = self._calculate_ndvi(s2)  # Vegetation index
+            s2_median = s2_col.median().clip(roi)
             
-            # 3. Identify impervious surfaces (high NDBI, low NDVI)
-            impervious = ndbi.gt(0.1).And(ndvi.lt(0.2))
+            # --- PHASE A: STABLE SPECTRAL DETECTION ---
+            ndbi = s2_median.normalizedDifference(['B11', 'B8'])
+            dw_col = ee.ImageCollection("GOOGLE/DYNAMICWORLD/V1") \
+                .filterBounds(roi) \
+                .filterDate(f'{year}-01-01', f'{year}-12-31')
+            dw = dw_col.median().clip(roi)
+            built_prob = dw.select('built')
             
-            # 4. Exclude buildings
-            buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons")
-            buildings_in_roi = buildings.filterBounds(roi)
+            # Identify impervious surfaces
+            impervious = built_prob.gt(0.12).Or(ndbi.gt(0.01))
             
-            # Convert buildings to raster mask
-            building_mask = ee.Image().byte().paint(buildings_in_roi, 1)
+            # Exclude buildings
+            buildings = ee.FeatureCollection("GOOGLE/Research/open-buildings/v3/polygons").filterBounds(roi)
+            building_mask = ee.Image().byte().paint(buildings, 1)
             
-            # 5. Get potential parking areas (impervious but not buildings)
-            potential_parking = impervious.And(building_mask.Not())
+            # PRIMARY MASK
+            parking_mask = impervious.And(building_mask.Not()).selfMask()
             
-            # 6. Texture analysis (optional - untuk filtering lebih lanjut)
-            # Parking lots biasanya smooth/uniform
-            texture = s2.select('B8').glcmTexture()
-            smoothness = texture.select('B8_contrast').lt(100)  # Low contrast = smooth
+            # Vectorize visual detections
+            visual_vectors = ee.FeatureCollection([])
+            try:
+                raw_vectors = parking_mask.reduceToVectors(
+                    geometry=roi, scale=10, geometryType='polygon', maxPixels=1e9
+                )
+                # CRITICAL: Calculate area and filter by shape
+                visual_vectors = self._filter_by_size_shape(raw_vectors)
+            except: pass
             
-            # 7. Combine filters
-            parking_mask = potential_parking.And(smoothness)
+            # --- PHASE B: ACTIVITY SCORING (Confidence) ---
+            # Corrected GEE stdDev calculation for ImageCollection
+            activity_val = s2_col.select(['B2', 'B3', 'B4']).reduce(ee.Reducer.stdDev()).reduce(ee.Reducer.mean()).clip(roi)
             
-            # 8. Vectorize (convert to polygons)
-            parking_vectors = parking_mask.selfMask().reduceToVectors(
-                geometry=roi,
-                scale=10,
-                geometryType='polygon',
-                maxPixels=1e9
-            )
+            # --- PHASE C: POI-ASSISTED DETECTION (The "Indomaret" Bridge) ---
+            # Optimized: Use vectorized reduceRegions to avoid N+1 .getInfo() calls
+            osm_pois = self.osm.fetch_parking_related_pois(roi)
+            poi_parking_data = []
             
-            # 9. Filter by size and shape
-            parking_filtered = self._filter_by_size_shape(parking_vectors)
+            if osm_pois:
+                # 1. Create FeatureCollection from POIs
+                poi_features = []
+                for i, poi in enumerate(osm_pois):
+                    f = ee.Feature(
+                        ee.Geometry.Point([poi['lon'], poi['lat']]),
+                        {
+                            'name': poi['name'],
+                            'category': poi.get('category', 'Komersial'),
+                            'orig_lat': poi['lat'],
+                            'orig_lon': poi['lon']
+                        }
+                    )
+                    poi_features.append(f)
+                
+                fc_pois = ee.FeatureCollection(poi_features)
+                
+                # 2. Batch Reduce (Single Request)
+                # Calculate mean activity score for all POIs at once
+                # buffer(20) is applied to each point
+                def buffer_poi(f):
+                    return f.buffer(20)
+                
+                fc_buffered = fc_pois.map(buffer_poi)
+                
+                # reduceRegions
+                fc_with_stats = activity_val.reduceRegions(
+                    collection=fc_buffered, 
+                    reducer=ee.Reducer.mean(), 
+                    scale=10
+                )
+                
+                # 3. Fetch Results (Single .getInfo call)
+                try:
+                    results = fc_with_stats.getInfo()['features']
+                except Exception as e:
+                    print(f"Batch OSM reduce error: {e}")
+                    results = []
+                
+                # 4. Process Results
+                for i, res in enumerate(results):
+                    props = res['properties']
+                    # 'mean' is the default name from reducer
+                    act_val = props.get('mean', 0)
+                    if act_val is None: act_val = 0
+                    
+                    lat = props.get('orig_lat')
+                    lon = props.get('orig_lon')
+                    name = props.get('name')
+                    category = props.get('category')
+                    
+                    # Same logic as before
+                    delta = 0.0001
+                    square_coords = [[lon-delta, lat-delta], [lon+delta, lat-delta], [lon+delta, lat+delta], [lon-delta, lat+delta], [lon-delta, lat-delta]]
+                    
+                    area_val = 65 
+                    rev_est = self._estimate_parking_revenue(area_val, 'perkantoran')
+                    
+                    poi_parking_data.append({
+                        'id': f"OSM-{i+1:03d}",
+                        'name': name,
+                        'lat': lat, 'lon': lon,
+                        'area_m2': area_val,
+                        'parking_type': 'perkantoran',
+                        'estimated_capacity': self._estimate_capacity(area_val, 'perkantoran'),
+                        'revenue_daily': rev_est['daily'],
+                        'revenue_monthly': rev_est['monthly'],
+                        'revenue_annual': rev_est['annual'],
+                        'coordinates': square_coords,
+                        'category': category,
+                        'source': 'OpenStreetMap',
+                        'activity_score': act_val,
+                        'confidence': 0.95 if (act_val and act_val > 40) else 0.85
+                    })
+
+            # --- PHASE D: MERGE & PROCESS ---
+            spectral_parking_data = []
+            try:
+                # Get detections from GEE
+                features = visual_vectors.limit(100).getInfo().get('features', [])
+                spectral_parking_data = self._process_parking_features(features)
+            except Exception as e:
+                print(f"Spectral merge error: {e}")
             
-            # 10. Get features as list
-            features = parking_filtered.getInfo()['features']
+            all_parking = poi_parking_data + spectral_parking_data
             
-            # 11. Process and calculate revenue
-            parking_data = self._process_parking_features(features)
+            print(f"DEBUG V14: District Analysis Complete")
+            print(f" - OSM POIs: {len(poi_parking_data)}")
+            print(f" - Satellite Spectral: {len(spectral_parking_data)}")
+            print(f" - Total: {len(all_parking)}")
             
             return {
                 'success': True,
-                'count': len(parking_data),
-                'parking_areas': parking_data,
-                'total_area_m2': sum(p['area_m2'] for p in parking_data),
-                'estimated_revenue_annual': sum(p['revenue_annual'] for p in parking_data),
-                'method': 'Spectral Analysis + Texture Filtering'
+                'count': len(all_parking),
+                'parking_areas': all_parking,
+                'total_area_m2': sum(p['area_m2'] for p in all_parking),
+                'estimated_revenue_annual': sum(p['revenue_annual'] for p in all_parking),
+                'method': 'V14 Resurrected (Hybrid OSM+Satelit)'
             }
-            
+        
         except Exception as e:
-            # Fallback to dummy data if GEE fails
-            return self._generate_dummy_parking_data(roi)
+            import traceback
+            print(f"Parking Detection V14 Error: {e}")
+            traceback.print_exc()
+            return {'success': False, 'error': str(e), 'parking_areas': []}
     
     def _load_sentinel2(self, roi: ee.Geometry, year: int) -> ee.Image:
         """Load and composite Sentinel-2 imagery"""
@@ -121,20 +210,38 @@ class ParkingDetector:
         return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
     
     def _filter_by_size_shape(self, features: ee.FeatureCollection) -> ee.FeatureCollection:
-        """Filter parking areas by size and shape"""
+        """Filter parking areas by size and shape (Road Masking)"""
         def filter_func(feature):
-            area = feature.geometry().area()
-            # Get bounding box to check aspect ratio
-            bounds = feature.geometry().bounds()
+            geom = feature.geometry()
+            area = geom.area()
+            
+            # ROAD MASKING LOGIC: Aspect Ratio Analysis
+            # Get oriented bounding box
+            bounds = geom.bounds()
             coords = ee.List(bounds.coordinates().get(0))
             
-            # Simple size filter
-            size_ok = area.gte(self.min_area).And(area.lte(self.max_area))
+            p1 = ee.List(coords.get(0))
+            p2 = ee.List(coords.get(1))
+            p3 = ee.List(coords.get(2))
             
-            return feature.set('area', area).set('size_ok', size_ok)
+            # Calculate width and height of bounding box
+            d1 = ee.Number(p1.get(0)).subtract(p2.get(0)).pow(2).add(ee.Number(p1.get(1)).subtract(p2.get(1)).pow(2)).sqrt()
+            d2 = ee.Number(p2.get(0)).subtract(p3.get(0)).pow(2).add(ee.Number(p2.get(1)).subtract(p3.get(1)).pow(2)).sqrt()
+            
+            # Aspect ratio: min(d1, d2) / max(d1, d2)
+            # Road has very low aspect ratio (long and thin)
+            max_d = ee.Number(d1).max(d2)
+            min_d = ee.Number(d1).min(d2)
+            ratio = min_d.divide(max_d)
+            
+            # Filters
+            size_ok = area.gte(self.min_area).And(area.lte(self.max_area))
+            shape_ok = ratio.gt(PARKING_ASPECT_RATIO) # Ignore very thin polygons
+            
+            return feature.set('area', area).set('valid', size_ok.And(shape_ok))
         
         filtered = features.map(filter_func)
-        return filtered.filter(ee.Filter.eq('size_ok', True))
+        return filtered.filter(ee.Filter.eq('valid', True))
     
     def _process_parking_features(self, features: List[Dict]) -> List[Dict]:
         """Process parking features and estimate revenue"""
@@ -144,8 +251,22 @@ class ParkingDetector:
             props = feature.get('properties', {})
             geom = feature['geometry']
             
-            # Calculate area
+            # Calculate area (Try props first, then local calculation)
             area_m2 = props.get('area', 0)
+            
+            if area_m2 == 0 and geom['type'] == 'Polygon':
+                # Emergency local calculation (approximate)
+                coords = geom['coordinates'][0]
+                # Shoelace formula for area
+                x = [c[0] for c in coords]
+                y = [c[1] for c in coords]
+                # Convert to meters approx (1 deg ~ 111320m at equator)
+                lat_avg = sum(y) / len(y)
+                m_per_deg_lat = 111320
+                m_per_deg_lon = 111320 * np.cos(np.radians(lat_avg))
+                
+                area = 0.5 * abs(sum(x[i] * y[i+1] - x[i+1] * y[i] for i in range(len(x)-1)))
+                area_m2 = area * m_per_deg_lat * m_per_deg_lon
             
             if area_m2 < self.min_area or area_m2 > self.max_area:
                 continue
@@ -297,13 +418,30 @@ class ParkingDetector:
         """Create HTML popup for parking area"""
         capacity = parking_data['estimated_capacity']
         
+        # Check for OSM source
+        is_osm = parking_data.get('source') == 'OpenStreetMap'
+        source_badge = "<span style='background:#10b981;color:white;padding:2px 6px;border-radius:4px;font-size:10px;margin-left:5px;'>Verified via OSM</span>" if is_osm else ""
+        category_row = f"<tr><td style='padding:8px;font-weight:bold;'>🏷️ Kategori</td><td style='padding:8px;'>{parking_data.get('category', 'Komersial')}</td></tr>" if is_osm else ""
+
+        # Activity details
+        act_score = parking_data.get('activity_score', 0)
+        act_label = ""
+        if act_score > 120:
+            act_label = "<div style='color:#10b981; font-weight:bold; font-size:11px;'>🔥 Aktivitas Kendaraan: SANGAT TINGGI</div>"
+        elif act_score > 80:
+            act_label = "<div style='color:#f59e0b; font-weight:bold; font-size:11px;'>🚗 Aktivitas Kendaraan: AKTIF</div>"
+        
         html = f"""
         <div style='width: 300px; font-family: Arial, sans-serif;'>
             <h3 style='margin: 0 0 10px 0; color: #1f2937; border-bottom: 2px solid #FFD700; padding-bottom: 5px;'>
-                🅿️ {parking_data['id']} - {parking_data['parking_type'].title()}
+                🅿️ {parking_data['id']} - {parking_data.get('name', parking_data['parking_type'].title())}
+                {source_badge}
             </h3>
             
+            {act_label}
+            
             <table style='width: 100%; font-size: 13px;'>
+                {category_row}
                 <tr style='background: #f3f4f6;'>
                     <td style='padding: 8px; font-weight: bold;'>📏 Luas Area</td>
                     <td style='padding: 8px;'>{parking_data['area_m2']:.1f} m²</td>
@@ -342,7 +480,39 @@ class ParkingDetector:
                 <div style='margin-top: 5px; font-style: italic; color: #1e40af;'>
                     💡 Tips: Gunakan fitur 'Historical Imagery' (ikon jam) di Google Earth untuk melihat bukti tahun {parking_data.get('year', '2024')}.
                 </div>
+
+                <!-- AI VALIDATION STATUS -->
+                <div style='margin-top: 10px; padding-top: 5px; border-top: 1px dashed #ccc;'>
+                    {self._get_ai_status_html(parking_data)}
+                </div>
             </div>
         </div>
         """
         return html
+
+    def _get_ai_status_html(self, parking_data: Dict) -> str:
+        """Get HTML snippet for AI validation status"""
+        ai_res = parking_data.get('ai_validation')
+        
+        if not ai_res:
+            return """
+            <div style='display: flex; align-items: center; justify-content: space-between;'>
+                <span style='color: #6b7280; font-weight: bold; font-size: 11px;'>🧠 Status AI: Menunggu Validasi</span>
+                <span style='font-size: 10px; background: #f3f4f6; padding: 2px 5px; border-radius: 3px;'>
+                    Pilih ID <b>{id}</b> di panel bawah untuk memvalidasi
+                </span>
+            </div>
+            """.format(id=parking_data['id'])
+            
+        status = ai_res.get('status', 'Unknown')
+        confidence = ai_res.get('confidence', 0)
+        is_verified = ai_res.get('verified', False)
+        
+        color = '#10b981' if is_verified else '#ef4444'
+        icon = '✅' if is_verified else '❌'
+        
+        return f"""
+        <div style='font-size: 11px; font-weight: bold; color: {color};'>
+            {icon} {status} (Conf: {int(confidence*100)}%)
+        </div>
+        """
