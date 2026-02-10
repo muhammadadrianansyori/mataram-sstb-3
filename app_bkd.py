@@ -565,13 +565,17 @@ with tab1:
         # Add legend
         m = add_map_legend(m, show_boundaries)
         
-        # Display map (GANTI BARIS INI)
+                # Display map
+        import streamlit_folium
+        from streamlit_folium import st_folium
+
+        # KODE BARU (Anti-Refresh saat Zoom)
         st_folium(
-        m, 
-        height=600, 
-        use_container_width=True, 
-        returned_objects=[]  # <--- INI KUNCINYA (Matikan auto-refresh)
-        )    
+            m, 
+            height=600, 
+            use_container_width=True,
+            returned_objects=[]  # <--- INI AGAR TIDAK REFRESH SAAT DI-ZOOM
+        )
         
         # Data table
         st.subheader("📋 Detail Area Parkir")
@@ -1236,5 +1240,6 @@ st.markdown("""
     <p>Powered by Google Earth Engine, Sentinel-2, Dynamic World | Data: Real-time</p>
 </div>
 """, unsafe_allow_html=True)
+
 
 
