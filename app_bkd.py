@@ -100,11 +100,8 @@ ai_status_msg = get_ai_status()
 # Sidebar Configuration
 st.sidebar.header("⚙️ Konfigurasi Sistem")
 
-# 1. Year Selection (Top)
-st.sidebar.header("📅 Periode Analisis")
-col_year1, col_year2 = st.sidebar.columns(2)
-year_baseline = col_year1.selectbox("Tahun Baseline", list(range(2015, 2026)), index=4)  # 2019
-year_current = col_year2.selectbox("Tahun Current", list(range(2015, 2026)), index=9)  # 2024
+# Sidebar Configuration
+st.sidebar.header("⚙️ Konfigurasi Sistem")
 
 # 2. District & Kelurahan Selection (Wilayah)
 st.sidebar.header("📍 Wilayah Analisis")
@@ -243,7 +240,19 @@ boundary_opacity = st.sidebar.slider(
 roi = None
 if gee_status:
     try:
-        roi = ee.Geometry.Point([district_config['lon'], district_config['lat']]).buffer(district_config['radius'])
+        # V3 Optimization: Dynamic ROI following Kelurahan Boundary
+        if selected_kelurahan and boundary_mgr:
+            # Get specific kelurahan boundary from GeoJSON
+            kel_boundary = boundary_mgr.get_boundary_by_kelurahan(selected_kelurahan[0])
+            if kel_boundary:
+                # Convert GeoJSON geometry to ee.Geometry
+                roi = ee.Geometry(kel_boundary['geometry'])
+                # No radius needed, uses exact official boundary
+        
+        # Fallback to district point + radius if no kelurahan or geometry failed
+        if roi is None:
+            roi = ee.Geometry.Point([district_config['lon'], district_config['lat']]).buffer(district_config['radius'])
+            
     except Exception as e:
         st.error(f"❌ Error creating ROI: {e}")
 
@@ -424,33 +433,97 @@ with tab1:
     st.header("🅿️ Monitoring Lahan Parkir")
     st.markdown("Deteksi dan kalkulasi potensi retribusi parkir dari citra satelit")
     
+    # Contextual Year Selection
+    year_analysis = st.selectbox("📅 Pilih Tahun Analisis", list(range(2015, 2026)), index=9, help="Pilih tahun data satelit yang ingin dianalisis")
+
     if st.button("🔍 Analisis Lahan Parkir", key="btn_parking"):
-        with st.spinner("Memproses data satelit (Gedung & Area Terbuka)..."):
-            # Detect parking areas directly from real data
-            parking_data = parking_detector.detect_parking_areas(roi, year_current)
+        # Use a separate function for caching to work properly
+        # We need to make sure arguments are hashable. roi is ee.Geometry (not easily hashable).
+        # So we cache based on district/kelurahan names (strings) + year.
+        
+        @st.cache_data(show_spinner=False, ttl=3600)
+        def convert_roi_and_detect(dist_name, kel_name, year):
+            # This runs only if cache misses
+            return parking_detector.detect_parking_areas(roi, year)
+
+        with st.spinner(f"Memproses data satelit tahun {year_analysis}..."):
+            # Use strings for caching key
+            kel_key = selected_kelurahan[0] if selected_kelurahan else "ALL"
+            parking_data = convert_roi_and_detect(selected_district, kel_key, year_analysis)
             
             # Store in session state
             st.session_state['parking_data'] = parking_data
     
     # Display results if available
     if 'parking_data' in st.session_state:
+        # Run AI Validation if not yet validated
+        # Lazy Loading AI Validation Logic
+        # -------------------------------------------------------------
+        # Masalah: Melakukan request ke GEE untuk setiap item (N+1) sangat lambat.
+        # Solusi: User memilih secara manual mana yang ingin divalidasi.
+        
+        data = st.session_state['parking_data']  # <--- FIXED: Define data here
+        
+        # 1. Container untuk Kontrol Validasi
+        st.markdown("---")
+        with st.expander("🕵️ Validasi Lahan dengan AI (Lazy Loading)", expanded=True):
+            col_v1, col_v2 = st.columns([3, 1])
+            
+            # Dropdown pilihan ID (hanya yang belum divalidasi)
+            unvalidated_items = [p for p in data['parking_areas'] if 'ai_validation' not in p]
+            all_items_ids = [p['id'] for p in data['parking_areas']]
+            
+            with col_v1:
+                target_id = st.selectbox(
+                    "Pilih ID Area Parkir untuk Divalidasi:",
+                    options=["--- Pilih ID ---"] + all_items_ids,
+                    help="Pilih ID lokasi yang ingin diverifikasi oleh AI (membutuhkan waktu ~2-3 detik)"
+                )
+            
+            with col_v2:
+                # Tombol Aksi
+                if st.button("🧠 Validasi Area Ini", type="primary", disabled=(target_id == "--- Pilih ID ---")):
+                    target_parking = next((p for p in data['parking_areas'] if p['id'] == target_id), None)
+                    
+                    if target_parking:
+                        with st.spinner(f"Sedang memvalidasi {target_id} dengan AI..."):
+                            # 1. Get Chip
+                            chip = ai_validator.get_image_chip(target_parking['coordinates'], year_analysis)
+                            # 2. Verify
+                            res = ai_validator.verify_parking_area(chip)
+                            # 3. Update Data in State
+                            target_parking['ai_validation'] = res
+                            st.success(f"Validasi Selesai: {res['status']}")
+                            st.rerun()
+
+        # -------------------------------------------------------------
+
         data = st.session_state['parking_data']
         
         # Apply spatial filter (Always apply for boundary capping)
         if boundary_mgr:
             data['parking_areas'] = boundary_mgr.spatial_filter(data['parking_areas'], selected_district, selected_kelurahan, selected_lingkungan, selected_rt)
             
-            # Recalculate metrics
-            data['count'] = len(data['parking_areas'])
-            data['total_area_m2'] = sum(p['area_m2'] for p in data['parking_areas'])
-            data['estimated_revenue_annual'] = sum(p['revenue_annual'] for p in data['parking_areas'])
+            # Filter only AI Verified (Optional but recommended for accuracy)
+            verified_areas = [p for p in data['parking_areas'] if p.get('ai_validation', {}).get('verified', False) or p.get('source') == 'OpenStreetMap']
+            
+            # Toggle for strict AI filtering - Default to False for better visibility
+            st.sidebar.markdown("---")
+            use_ai_strict = st.sidebar.toggle("Hanya Tampilkan AI Verified + OSM", value=False, help="Hanya hitung area yang sudah dikonfirmasi benar oleh AI atau OSM")
+            
+            display_areas = verified_areas if use_ai_strict else data['parking_areas']
+
+            # Recalculate metrics based on display_areas
+            data['count'] = len(display_areas)
+            data['total_area_m2'] = sum(p['area_m2'] for p in display_areas)
+            data['estimated_revenue_annual'] = sum(p['revenue_annual'] for p in display_areas)
         
         # Metrics
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("🅿️ Total Area Parkir", f"{data['count']} lokasi")
         col2.metric("📏 Total Luas", f"{int(data['total_area_m2']):,} m²")
         col3.metric("💰 Potensi PAD/Tahun", f"Rp {int(data['estimated_revenue_annual']):,}")
-        col4.metric("📊 Metode", data['method'].split('(')[0].strip())
+        col4.metric("🧠 AI Status", "Verified" if len(data['parking_areas']) > 0 else "N/A")
         
         # Map
         st.subheader("🗺️ Peta Lokasi Parkir")
@@ -530,8 +603,15 @@ with tab1:
 # ============================================
 with tab2:
     st.header("🏗️ Analisis Alih Fungsi Lahan")
-    st.markdown(f"Deteksi perubahan penggunaan lahan: **{year_baseline}** → **{year_current}**")
+    st.markdown("Deteksi perubahan penggunaan lahan dari Citra Satelit")
     
+    # Contextual Year Selection
+    col_y1, col_y2 = st.columns(2)
+    year_baseline = col_y1.selectbox("📅 Tahun Baseline", list(range(2015, 2026)), index=4, help="Tahun awal pembanding")
+    year_current = col_y2.selectbox("📅 Tahun Saat Ini", list(range(2015, 2026)), index=9, help="Tahun akhir pembanding")
+
+    st.markdown(f"Status Analisis: **{year_baseline}** → **{year_current}**")
+
     if st.button("🔍 Analisis Perubahan Lahan", key="btn_landuse"):
         with st.spinner("Memproses data temporal (Sentinel-2 & Dynamic World)..."):
             # Analyze real land use change
@@ -697,12 +777,19 @@ with tab2:
 # ============================================
 with tab3:
     st.header("🏢 Monitoring Perubahan Bangunan (PBB)")
-    st.markdown(f"Deteksi perubahan bangunan: **{year_baseline}** → **{year_current}**")
+    st.markdown("Deteksi penambahan area atau tinggi bangunan (Google Open Buildings)")
+    
+    # Contextual Year Selection
+    col_p1, col_p2 = st.columns(2)
+    pbb_year_baseline = col_p1.selectbox("📅 Tahun Baseline PBB", list(range(2015, 2026)), index=4)
+    pbb_year_current = col_p2.selectbox("📅 Tahun Saat Ini PBB", list(range(2015, 2026)), index=9)
+
+    st.markdown(f"Status Analisis: **{pbb_year_baseline}** → **{pbb_year_current}**")
     
     if st.button("🔍 Analisis Perubahan Bangunan", key="btn_pbb"):
         with st.spinner("Memproses data bangunan (Google Open Buildings)..."):
             # Monitor actual building changes
-            pbb_data = pbb_monitor.monitor_building_changes(roi, year_baseline, year_current)
+            pbb_data = pbb_monitor.monitor_building_changes(roi, pbb_year_baseline, pbb_year_current)
             
             st.session_state['pbb_data'] = pbb_data
     
