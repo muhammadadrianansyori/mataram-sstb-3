@@ -86,49 +86,49 @@ LAND_CHANGE_TAX_POTENTIAL = {
 # ==========================================
 MATARAM_DISTRICTS = {
     'Ampenan': {
-        'lat': -8.5833,
-        'lon': 116.0942,
-        'radius': 2000,
+        'lat': -8.5707,
+        'lon': 116.0840,
+        'radius': 3500,
         'zone': 'semi_pusat',
         'kdkec': '010',
         'nmkec': 'AMPENAN'
     },
     'Cakranegara': {
-        'lat': -8.5833,
-        'lon': 116.1167,
-        'radius': 2000,
+        'lat': -8.5841,
+        'lon': 116.1310,
+        'radius': 3500,
         'zone': 'pusat_kota',
         'kdkec': '020',
         'nmkec': 'CAKRANEGARA'
     },
     'Mataram': {
-        'lat': -8.5667,
-        'lon': 116.1167,
-        'radius': 2000,
+        'lat': -8.6010,
+        'lon': 116.1099,
+        'radius': 3500,
         'zone': 'pusat_kota',
         'kdkec': '030',
         'nmkec': 'MATARAM'
     },
     'Selaparang': {
-        'lat': -8.5833,
-        'lon': 116.1333,
-        'radius': 2000,
+        'lat': -8.5721,
+        'lon': 116.1068,
+        'radius': 3500,
         'zone': 'semi_pusat',
         'kdkec': '040',
         'nmkec': 'SELAPARANG'
     },
     'Sekarbela': {
-        'lat': -8.5667,
-        'lon': 116.0833,
-        'radius': 2000,
+        'lat': -8.6080,
+        'lon': 116.0869,
+        'radius': 3500,
         'zone': 'pinggiran',
         'kdkec': '050',
         'nmkec': 'SEKARBELA'
     },
     'Sandubaya': {
-        'lat': -8.5500,
-        'lon': 116.1333,
-        'radius': 2000,
+        'lat': -8.5979,
+        'lon': 116.1449,
+        'radius': 3500,
         'zone': 'pinggiran',
         'kdkec': '060',
         'nmkec': 'SANDUBAYA'
@@ -139,9 +139,11 @@ MATARAM_DISTRICTS = {
 # THRESHOLDS & PARAMETERS
 # ==========================================
 # Parking detection
-PARKING_MIN_AREA = 100        # m² - minimum area untuk dianggap parkir
+PARKING_MIN_AREA = 50         # m² - minimum area (Indomaret/Retail scale)
 PARKING_MAX_AREA = 10000      # m² - maximum area (filter outliers)
-PARKING_ASPECT_RATIO = 0.3    # Min aspect ratio (prevent long thin shapes)
+PARKING_ASPECT_RATIO = 0.15    # Min aspect ratio (Allow narrow retail parking)
+PARKING_ACTIVITY_MIN = 100    # Threshold untuk deteksi pergerakan kendaraan
+ROAD_BUFFER_M = 25            # Jarak maksimum dari jalan raya (meter)
 
 # Building detection
 BUILDING_MIN_AREA = 20        # m² - minimum building area
@@ -206,6 +208,5 @@ BOUNDARY_STYLES = {
 }
 
 # Path to GeoJSON boundary data
-BOUNDARY_GEOJSON_PATH = '5271sls.geojson'
-
+BOUNDARY_GEOJSON_PATH = 'd:/bps/5271sls.geojson'
 
