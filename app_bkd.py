@@ -30,6 +30,7 @@ from config.bkd_config import (
 )
 # Import AI Validator
 from modules.ai_validator import AIValidator, get_ai_status
+from modules.street_mapper import StreetMapper
 
 
 # Page Config
@@ -418,12 +419,13 @@ landuse_analyzer = LandUseAnalyzer()
 pbb_monitor = PBBMonitor()
 
 # Main Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🅿️ Lahan Parkir",
     "🏗️ Alih Fungsi Lahan",
     "🏢 Monitoring PBB",
     "📊 Dashboard PAD",
-    "📄 Laporan & Export"
+    "📄 Laporan & Export",
+    "🛣️ Pemetaan Jalan"
 ])
 
 # ============================================
@@ -1289,6 +1291,575 @@ with tab5:
         elif preview_option == "Perubahan Bangunan" and 'pbb_data' in st.session_state:
             df = pd.DataFrame(st.session_state['pbb_data']['changes'])
             st.dataframe(df, use_container_width=True)
+
+# ============================================
+# TAB 6: PEMETAAN JALAN
+# ============================================
+with tab6:
+    st.header("🛣️ Pemetaan Jalan dan Gang")
+    st.markdown("Pemetaan nama jalan/gang dengan informasi administratif (RT, Lingkungan, Kelurahan)")
+    
+    # Info box
+    st.markdown("""
+    <div class="info-box">
+        <b>📋 Cara Penggunaan:</b><br>
+        1. Pilih Kecamatan yang ingin dipetakan<br>
+        2. Klik tombol "Proses Data Jalan"<br>
+        3. Tunggu hingga data selesai diproses (1-2 menit)<br>
+        4. Lihat hasil pemetaan dan download Excel
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Initialize street mapper
+    try:
+        from config.bkd_config import BOUNDARY_GEOJSON_PATH
+        street_mapper = StreetMapper(BOUNDARY_GEOJSON_PATH)
+        
+        # Kecamatan selection
+        kecamatan_list = street_mapper.get_kecamatan_list()
+        selected_kecamatan = st.selectbox(
+            "📍 Pilih Kecamatan",
+            kecamatan_list,
+            help="Pilih kecamatan untuk memetakan jalan"
+        )
+        
+        # Process button
+        if st.button("🔍 Proses Data Jalan", type="primary", key="btn_streets"):
+            with st.spinner(f"Mengambil data jalan dari OpenStreetMap untuk Kecamatan {selected_kecamatan}..."):
+                # Fetch and process street data
+                street_data = street_mapper.map_streets_to_admin(selected_kecamatan)
+                
+                # Store in session state
+                st.session_state['street_data'] = street_data
+                st.session_state['street_kecamatan'] = selected_kecamatan
+        
+        # Display results
+        if 'street_data' in st.session_state and st.session_state.get('street_kecamatan') == selected_kecamatan:
+            df_streets = st.session_state['street_data']
+            
+            if df_streets.empty:
+                st.warning(f"⚠️ Tidak ada data jalan ditemukan untuk Kecamatan {selected_kecamatan}. Pastikan koneksi internet stabil dan coba lagi.")
+            else:
+                # Metrics
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("🛣️ Total Jalan/Gang", f"{len(df_streets)} jalan")
+                col2.metric("📍 Total Kelurahan", f"{df_streets['Kelurahan'].nunique()} kelurahan")
+                col3.metric("🏘️ Total Lingkungan", f"{df_streets['Lingkungan'].nunique()} lingkungan")
+                col4.metric("📋 Total RT", f"{df_streets['SLS'].nunique()} RT")
+                
+                # Map Visualization
+                st.subheader("🗺️ Peta Validasi Jalan")
+                
+                # Street search box
+                col_search, col_toggle = st.columns([3, 1])
+                with col_search:
+                    # Get list of unique street names for search
+                    street_names = ["--- Pilih Jalan untuk Zoom ---"] + sorted(df_streets['Nama Jalan dan Gang'].unique().tolist())
+                    selected_street = st.selectbox(
+                        "🔍 Cari Jalan/Gang:",
+                        street_names,
+                        key="street_search",
+                        help="Pilih jalan untuk zoom ke lokasi"
+                    )
+                
+                with col_toggle:
+                    show_boundaries = st.checkbox(
+                        "Tampilkan Batas RT",
+                        value=True,
+                        help="Tampilkan batas wilayah RT/Lingkungan/Kelurahan"
+                    )
+                
+                st.info("💡 Klik atau hover pada garis jalan untuk melihat nama jalan dan informasi administratif")
+                
+                # Fetch street geometry data for mapping
+                streets_gdf = street_mapper.fetch_streets_osm(selected_kecamatan)
+                
+                if not streets_gdf.empty:
+                    # Calculate map center and zoom
+                    bounds = streets_gdf.total_bounds  # [minx, miny, maxx, maxy]
+                    center_lat = (bounds[1] + bounds[3]) / 2
+                    center_lon = (bounds[0] + bounds[2]) / 2
+                    zoom_level = 14
+                    
+                    # If a street is selected, zoom to it
+                    if selected_street != "--- Pilih Jalan untuk Zoom ---":
+                        selected_street_row = streets_gdf[streets_gdf['name'] == selected_street].iloc[0]
+                        centroid = selected_street_row['geometry'].centroid
+                        center_lat = centroid.y
+                        center_lon = centroid.x
+                        zoom_level = 17  # Closer zoom for specific street
+                    
+                    # Create Folium map with plain background
+                    m = folium.Map(
+                        location=[center_lat, center_lon],
+                        zoom_start=zoom_level,
+                        tiles='CartoDB positron',
+                        attr='CartoDB Positron'
+                    )
+                    
+                    # Color mapping for different road types
+                    road_colors = {
+                        'primary': '#FF6B6B',
+                        'secondary': '#4ECDC4',
+                        'tertiary': '#95E1D3',
+                        'residential': '#3B82F6',
+                        'service': '#FFA726',
+                        'unclassified': '#9E9E9E',
+                        'living_street': '#66BB6A',
+                        'pedestrian': '#AB47BC',
+                        'footway': '#8D6E63',
+                        'path': '#78909C'
+                    }
+                    
+                    # Add administrative boundaries if enabled
+                    if show_boundaries:
+                        # Get SLS boundaries for selected Kecamatan
+                        kec_boundaries = street_mapper.sls_gdf[
+                            street_mapper.sls_gdf['nmkec'] == selected_kecamatan.upper()
+                        ]
+                        
+                        for idx, boundary in kec_boundaries.iterrows():
+                            # Create popup for boundary
+                            boundary_popup = f"""
+                            <div style="font-family: Arial; width: 200px;">
+                                <h4 style="margin: 0; color: #1F4E78;">Batas Wilayah</h4>
+                                <hr style="margin: 5px 0;">
+                                <p style="margin: 2px 0;"><b>RT:</b> {boundary['nmsls']}</p>
+                                <p style="margin: 2px 0;"><b>Kelurahan:</b> {boundary['nmdesa']}</p>
+                                <p style="margin: 2px 0;"><b>Kecamatan:</b> {boundary['nmkec']}</p>
+                            </div>
+                            """
+                            
+                            # Add boundary polygon
+                            folium.GeoJson(
+                                boundary['geometry'],
+                                style_function=lambda x: {
+                                    'fillColor': 'transparent',
+                                    'color': '#FF1744',
+                                    'weight': 2,
+                                    'dashArray': '5, 5',
+                                    'fillOpacity': 0,
+                                    'opacity': 0.6
+                                },
+                                popup=folium.Popup(boundary_popup, max_width=250),
+                                tooltip=folium.Tooltip(
+                                    f"<b>{boundary['nmsls']}</b>",
+                                    style="background-color: #FFE0E0; color: #C62828; font-family: Arial; font-size: 11px; padding: 3px; border: 1px solid #FF1744; border-radius: 3px;"
+                                )
+                            ).add_to(m)
+                    
+                    
+                    # Add streets to map
+                    for idx, row in streets_gdf.iterrows():
+                        # Get color based on highway type
+                        color = road_colors.get(row['highway_type'], '#333333')
+                        
+                        # Check if this is the selected street for highlighting
+                        is_selected = (selected_street != "--- Pilih Jalan untuk Zoom ---" and 
+                                      row['name'] == selected_street)
+                        
+                        # Convert coords to Folium format [lat, lon]
+                        coords_folium = [[lat, lon] for lon, lat in row['coords_list']]
+                        
+                        # Create popup HTML with detailed info
+                        popup_html = f"""
+                        <div style="font-family: Arial; width: 250px;">
+                            <h4 style="margin: 0; color: #1F4E78;">{row['name']}</h4>
+                            <hr style="margin: 5px 0;">
+                            <p style="margin: 2px 0;"><b>Tipe:</b> {row['highway_type'].title()}</p>
+                            <p style="margin: 2px 0;"><b>OSM ID:</b> {row['osm_id']}</p>
+                        </div>
+                        """
+                        
+                        # Add street polyline
+                        folium.PolyLine(
+                            locations=coords_folium,
+                            popup=folium.Popup(popup_html, max_width=300),
+                            tooltip=folium.Tooltip(
+                                f"<b>{row['name']}</b><br>Tipe: {row['highway_type'].title()}",
+                                style="background-color: white; color: black; font-family: Arial; font-size: 12px; padding: 5px; border: 2px solid #333; border-radius: 3px;"
+                            ),
+                            color='#FFD700' if is_selected else color,  # Gold color for selected
+                            weight=6 if is_selected else 3,  # Thicker if selected
+                            opacity=1.0 if is_selected else 0.8
+                        ).add_to(m)
+                        
+                        # Add marker at center of selected street
+                        if is_selected:
+                            centroid = row['geometry'].centroid
+                            folium.Marker(
+                                location=[centroid.y, centroid.x],
+                                popup=folium.Popup(popup_html, max_width=300),
+                                icon=folium.Icon(color='orange', icon='road', prefix='fa'),
+                                tooltip=f"<b>📍 {row['name']}</b>"
+                            ).add_to(m)
+                    
+                    # Add legend
+                    legend_html = '''
+                    <div style="position: fixed; 
+                                bottom: 50px; right: 50px; width: 200px; height: auto; 
+                                background-color: white; z-index:9999; font-size:12px;
+                                border:2px solid grey; border-radius: 5px; padding: 10px;
+                                box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <p style="margin: 0 0 8px 0; font-weight: bold; font-size: 13px; border-bottom: 1px solid #ddd; padding-bottom: 5px;">🛣️ Jenis Jalan</p>
+                    <p style="margin: 3px 0;"><span style="color: #FF6B6B; font-weight: bold;">━━━</span> Primary</p>
+                    <p style="margin: 3px 0;"><span style="color: #4ECDC4; font-weight: bold;">━━━</span> Secondary</p>
+                    <p style="margin: 3px 0;"><span style="color: #95E1D3; font-weight: bold;">━━━</span> Tertiary</p>
+                    <p style="margin: 3px 0;"><span style="color: #3B82F6; font-weight: bold;">━━━</span> Residential</p>
+                    <p style="margin: 3px 0;"><span style="color: #FFA726; font-weight: bold;">━━━</span> Service</p>
+                    <p style="margin: 3px 0;"><span style="color: #66BB6A; font-weight: bold;">━━━</span> Gang/Pedestrian</p>
+                    </div>
+                    '''
+                    m.get_root().html.add_child(folium.Element(legend_html))
+                    
+                    # Display map with st_folium
+                    from streamlit_folium import st_folium
+                    st_folium(m, width=None, height=600, returned_objects=[])
+                else:
+                    st.warning("Tidak dapat memuat data geometri jalan untuk peta")
+                
+                # Data table
+                st.subheader("📊 Data Jalan dan Administratif")
+                st.dataframe(df_streets, use_container_width=True, height=400)
+                
+                # Excel export
+                st.subheader("📥 Download Data")
+                
+                # Create Excel file in memory with enhanced formatting
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_streets.to_excel(writer, sheet_name='Data Jalan', index=False, startrow=1)
+                    
+                    workbook = writer.book
+                    worksheet = writer.sheets['Data Jalan']
+                    
+                    # Import openpyxl formatting
+                    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+                    
+                    # Define styles
+                    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+                    header_font = Font(bold=True, color="FFFFFF", size=12)
+                    border = Border(
+                        left=Side(style='thin', color='000000'),
+                        right=Side(style='thin', color='000000'),
+                        top=Side(style='thin', color='000000'),
+                        bottom=Side(style='thin', color='000000')
+                    )
+                    
+                    # Title row
+                    worksheet['A1'] = f'DATA PEMETAAN JALAN - KECAMATAN {selected_kecamatan.upper()}'
+                    worksheet['A1'].font = Font(bold=True, size=14, color="1F4E78")
+                    worksheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
+                    # Merge across all 9 columns (A to I)
+                    worksheet.merge_cells('A1:I1')
+                    worksheet.row_dimensions[1].height = 25
+                    
+                    # Format headers (row 2)
+                    for col_idx, col_name in enumerate(df_streets.columns, start=1):
+                        cell = worksheet.cell(row=2, column=col_idx)
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                        cell.border = border
+                    
+                    # Auto-adjust column widths and format data cells
+                    for idx, col in enumerate(df_streets.columns, start=1):
+                        col_letter = chr(64 + idx)
+                        
+                        # Calculate max width (limit to max 60)
+                        data_max_len = 0
+                        if not df_streets.empty:
+                            data_max_len = df_streets[col].astype(str).map(len).max()
+                        
+                        max_length = max(data_max_len, len(col))
+                        
+                        # Special width for links
+                        if 'Link' in col:
+                            worksheet.column_dimensions[col_letter].width = 30
+                        else:
+                            worksheet.column_dimensions[col_letter].width = min(max_length + 3, 60)
+                        
+                        # Data rows formatting
+                        for row_idx in range(3, len(df_streets) + 3):
+                            cell = worksheet.cell(row=row_idx, column=idx)
+                            cell.border = border
+                            
+                            # Center coordinates and coverage
+                            if col in ['Latitude', 'Longitude', 'Coverage']:
+                                cell.alignment = Alignment(horizontal='center')
+                                if col in ['Latitude', 'Longitude']:
+                                    cell.number_format = '0.000000'
+                            
+                            # Highlight links in blue
+                            if 'Link' in col:
+                                cell.font = Font(color="0563C1", underline="single")
+                                cell.alignment = Alignment(horizontal='left', vertical='center')
+                            else:
+                                if col not in ['Latitude', 'Longitude', 'Coverage']:
+                                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                    
+                    # Freeze header rows
+                    worksheet.freeze_panes = 'A3'
+                
+                excel_data = output.getvalue()
+                
+                st.download_button(
+                    label="📥 Download Excel",
+                    data=excel_data,
+                    file_name=f"data_jalan_{selected_kecamatan.lower()}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    help="Download data jalan dalam format Excel dengan formatting profesional"
+                )
+                
+                # Summary statistics
+                st.subheader("📈 Statistik per Kelurahan")
+                
+                kelurahan_stats = df_streets.groupby('Kelurahan').agg({
+                    'Nama Jalan dan Gang': 'count',
+                    'Lingkungan': 'nunique',
+                    'SLS': 'nunique'
+                }).reset_index()
+                kelurahan_stats.columns = ['Kelurahan', 'Jumlah Jalan', 'Jumlah Lingkungan', 'Jumlah RT']
+                
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    st.dataframe(kelurahan_stats, use_container_width=True)
+                
+                with col2:
+                    # Simple bar chart
+                    fig = px.bar(
+                        kelurahan_stats,
+                        x='Kelurahan',
+                        y='Jumlah Jalan',
+                        title=f'Distribusi Jalan per Kelurahan - {selected_kecamatan}',
+                        labels={'Jumlah Jalan': 'Jumlah Jalan/Gang'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Validation Section with Google Sheets
+                st.subheader("✅ Validasi Data dengan Google Sheets")
+                st.markdown("""
+                <div class="info-box">
+                    <b>📋 Cara Validasi:</b><br>
+                    1. Pastikan Google Sheets Anda publik (Anyone with the link can view)<br>
+                    2. Copy URL Google Sheets Anda<br>
+                    3. Paste di bawah dan klik "Validasi Data"<br>
+                    4. Sistem akan membandingkan data OSM dengan data Anda
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Google Sheets input
+                col_url, col_method = st.columns([3, 1])
+                
+                with col_url:
+                    sheets_url = st.text_input(
+                        "🔗 Google Sheets URL:",
+                        placeholder="https://docs.google.com/spreadsheets/d/...",
+                        help="Paste link Google Sheets yang berisi data jalan untuk validasi"
+                    )
+                
+                with col_method:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    use_public = st.checkbox(
+                        "Public Sheet",
+                        value=True,
+                        help="Centang jika sheet publik (tidak perlu autentikasi)"
+                    )
+                
+                if st.button("🔍 Validasi Data", type="primary", key="validate_btn"):
+                    if not sheets_url:
+                        st.warning("⚠️ Masukkan URL Google Sheets terlebih dahulu")
+                    else:
+                        try:
+                            with st.spinner("Mengambil data dari Google Sheets..."):
+                                # Import data from Google Sheets
+                                import re
+                                
+                                if use_public:
+                                    # Extract sheet ID and gid from URL
+                                    match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', sheets_url)
+                                    gid_match = re.search(r'[#&]gid=([0-9]+)', sheets_url)
+                                    
+                                    if match:
+                                        sheet_id = match.group(1)
+                                        
+                                        # Public sheet CSV export URL with gid support
+                                        if gid_match:
+                                            gid = gid_match.group(1)
+                                            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+                                            st.info(f"📄 Menggunakan sheet dengan GID: {gid}")
+                                        else:
+                                            csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+                                            st.info("📄 Menggunakan sheet pertama (default)")
+                                        
+                                        # Read directly with pandas
+                                        df_reference = pd.read_csv(csv_url)
+                                        
+                                        st.success(f"✅ Data berhasil di-import: {len(df_reference)} baris")
+                                        
+                                        # Display reference data preview
+                                        with st.expander("👁️ Preview Data Google Sheets"):
+                                            st.dataframe(df_reference.head(10), use_container_width=True)
+                                        
+                                        # Compare data
+                                        st.subheader("📊 Hasil Validasi")
+                                        
+                                        # Normalization function for street names
+                                        def normalize_street_name(name):
+                                            """Normalize street name by expanding abbreviations"""
+                                            if pd.isna(name):
+                                                return ""
+                                            
+                                            name = str(name).strip()
+                                            
+                                            # Define abbreviation mappings
+                                            replacements = [
+                                                (r'\bGg\.?\s+', 'Gang '),      # Gg. or Gg → Gang
+                                                (r'\bJl\.?\s+', 'Jalan '),     # Jl. or Jl → Jalan
+                                                (r'\bJln\.?\s+', 'Jalan '),    # Jln. or Jln → Jalan
+                                                (r'\bJln\b', 'Jalan'),         # Jln at end → Jalan
+                                                (r'\bGg\b', 'Gang'),           # Gg at end → Gang
+                                                (r'\bJl\b', 'Jalan'),          # Jl at end → Jalan
+                                            ]
+                                            
+                                            # Apply replacements
+                                            for pattern, replacement in replacements:
+                                                name = re.sub(pattern, replacement, name, flags=re.IGNORECASE)
+                                            
+                                            # Remove extra spaces and convert to lowercase
+                                            name = ' '.join(name.split()).lower()
+                                            
+                                            return name
+                                        
+                                        # Normalize column names for comparison
+                                        col_mapping = {}
+                                        for col in df_reference.columns:
+                                            col_lower = col.lower().strip()
+                                            if 'jalan' in col_lower or 'nama' in col_lower:
+                                                col_mapping['street_name'] = col
+                                            elif 'sls' in col_lower or 'rt' in col_lower:
+                                                col_mapping['sls'] = col
+                                            elif 'lingkungan' in col_lower:
+                                                col_mapping['lingkungan'] = col
+                                            elif 'kelurahan' in col_lower:
+                                                col_mapping['kelurahan'] = col
+                                        
+                                        # Create comparison
+                                        matches = []
+                                        mismatches = []
+                                        missing_in_osm = []
+                                        extra_in_osm = []
+                                        
+                                        # Normalize street names for comparison
+                                        df_streets_norm = df_streets.copy()
+                                        df_streets_norm['normalized_name'] = df_streets['Nama Jalan dan Gang'].apply(normalize_street_name)
+                                        
+                                        if 'street_name' in col_mapping:
+                                            df_reference_norm = df_reference.copy()
+                                            df_reference_norm['normalized_name'] = df_reference[col_mapping['street_name']].apply(normalize_street_name)
+                                            
+                                            # Show normalization examples
+                                            with st.expander("🔍 Preview Normalisasi Nama Jalan"):
+                                                preview_data = []
+                                                for i in range(min(5, len(df_reference))):
+                                                    preview_data.append({
+                                                        'Original (Google Sheets)': df_reference.iloc[i][col_mapping['street_name']],
+                                                        'Normalized': df_reference_norm.iloc[i]['normalized_name']
+                                                    })
+                                                st.dataframe(pd.DataFrame(preview_data), use_container_width=True)
+                                            
+                                            # Find matches and mismatches
+                                            for idx, ref_row in df_reference_norm.iterrows():
+                                                ref_street = ref_row['normalized_name']
+                                                
+                                                osm_match = df_streets_norm[df_streets_norm['normalized_name'] == ref_street]
+                                                
+                                                if not osm_match.empty:
+                                                    osm_row = osm_match.iloc[0]
+                                                    
+                                                    # Check if administrative data matches
+                                                    admin_match = True
+                                                    differences = []
+                                                    
+                                                    if 'sls' in col_mapping and str(ref_row[col_mapping['sls']]) != str(osm_row['SLS']):
+                                                        admin_match = False
+                                                        differences.append(f"SLS: {ref_row[col_mapping['sls']]} vs {osm_row['SLS']}")
+                                                    
+                                                    if 'lingkungan' in col_mapping and str(ref_row[col_mapping['lingkungan']]) != str(osm_row['Lingkungan']):
+                                                        admin_match = False
+                                                        differences.append(f"Lingkungan: {ref_row[col_mapping['lingkungan']]} vs {osm_row['Lingkungan']}")
+                                                    
+                                                    if 'kelurahan' in col_mapping and str(ref_row[col_mapping['kelurahan']]) != str(osm_row['Kelurahan']):
+                                                        admin_match = False
+                                                        differences.append(f"Kelurahan: {ref_row[col_mapping['kelurahan']]} vs {osm_row['Kelurahan']}")
+                                                    
+                                                    if admin_match:
+                                                        matches.append({
+                                                            'Nama Jalan': ref_row[col_mapping['street_name']],
+                                                            'Status': '✅ Cocok'
+                                                        })
+                                                    else:
+                                                        mismatches.append({
+                                                            'Nama Jalan': ref_row[col_mapping['street_name']],
+                                                            'Perbedaan': ', '.join(differences)
+                                                        })
+                                                else:
+                                                    missing_in_osm.append({
+                                                        'Nama Jalan': ref_row[col_mapping['street_name']],
+                                                        'Info': 'Tidak ditemukan di data OSM'
+                                                    })
+                                            
+                                            # Find streets in OSM but not in reference
+                                            for idx, osm_row in df_streets_norm.iterrows():
+                                                if osm_row['normalized_name'] not in df_reference_norm['normalized_name'].values:
+                                                    extra_in_osm.append({
+                                                        'Nama Jalan': osm_row['Nama Jalan dan Gang'],
+                                                        'Info': 'Ada di OSM, tidak ada di referensi'
+                                                    })
+                                            
+                                            # Display results
+                                            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                                            col_stat1.metric("✅ Cocok", len(matches), delta=f"{len(matches)/len(df_reference)*100:.1f}%")
+                                            col_stat2.metric("⚠️ Beda Data", len(mismatches))
+                                            col_stat3.metric("❌ Hilang di OSM", len(missing_in_osm))
+                                            col_stat4.metric("➕ Ekstra di OSM", len(extra_in_osm))
+                                            
+                                            # Show mismatches
+                                            if mismatches:
+                                                st.warning(f"⚠️ **{len(mismatches)} jalan** ditemukan perbedaan data administratif:")
+                                                st.dataframe(pd.DataFrame(mismatches), use_container_width=True)
+                                            
+                                            # Show missing streets
+                                            if missing_in_osm:
+                                                st.error(f"❌ **{len(missing_in_osm)} jalan** dari referensi tidak ditemukan di OSM:")
+                                                st.dataframe(pd.DataFrame(missing_in_osm), use_container_width=True)
+                                            
+                                            # Show extra streets
+                                            if extra_in_osm:
+                                                with st.expander(f"➕ {len(extra_in_osm)} jalan tambahan di OSM (tidak ada di referensi)"):
+                                                    st.dataframe(pd.DataFrame(extra_in_osm), use_container_width=True)
+                                            
+                                            if not mismatches and not missing_in_osm:
+                                                st.success("🎉 Semua data cocok sempurna!")
+                                        
+                                        else:
+                                            st.error("❌ Kolom 'Nama Jalan' tidak ditemukan di Google Sheets. Pastikan ada kolom yang mengandung nama jalan.")
+                                    
+                                    else:
+                                        st.error("❌ URL Google Sheets tidak valid")
+                                else:
+                                    st.info("🔐 Untuk sheet private, gunakan Google Sheets API dengan service account. Silakan hubungi developer.")
+                        
+                        except Exception as e:
+                            st.error(f"❌ Error saat mengambil data: {str(e)}")
+                            st.info("💡 Pastikan Google Sheets Anda sudah diset public (Anyone with the link can view)")
+
+    
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+        st.info("Pastikan file `5271sls.geojson` tersedia di lokasi yang benar.")
+
 
 # Footer
 st.markdown("---")
