@@ -7,6 +7,9 @@ pandas
 plotly
 openpyxl
 shapely
+requests
+openpyxl
+gspread
 
 # AI Dependencies
 transformers
@@ -16,3 +19,4 @@ Pillow
 numpy
 google-auth
 streamlit-folium
+
